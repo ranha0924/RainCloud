@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { mkdir, writeFile, copyFile, lstat, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { command } from './process.mjs';
 
 export const git = async (cwd,args,opts={})=>{const result=await command('git',['-c','core.quotepath=false',...args],cwd,opts);return {...result,output:result.stdout};};
@@ -19,9 +20,11 @@ export async function inspectRepository(repository){
 export async function prepareWorkspace(store,project,task,signal){
   if(task.workspace)return task.workspace;
   const before=await inspectRepository(project.repository);
-  const dir=path.join(store.dir,'projects',project.id,'tasks',task.id);await mkdir(dir,{recursive:true});
+  let dir=path.join(store.dir,'projects',project.id,'tasks',task.id);
+  // A crash during clone/snapshot leaves a preserved incomplete directory, never a reused half-clone.
+  if(existsSync(path.join(dir,'repository')))dir+=`-prepare-${randomUUID().slice(0,8)}`;
+  await mkdir(dir,{recursive:true});
   const repo=path.join(dir,'repository');
-  if(existsSync(repo))throw new Error('준비가 중단된 작업 공간이 있습니다. 새 업무로 다시 시작하세요. 원본 저장소는 보존됩니다.');
   await git(dir,['clone','--no-hardlinks','--no-local','--',before.root,repo],{signal});
   await git(repo,['checkout','--detach',before.head],{signal});
   await git(repo,['config','user.name','Rain Company']);await git(repo,['config','user.email','ai-company@localhost']);

@@ -1,7 +1,7 @@
 {
   "name": "rain-company", "version": "0.1.0", "private": true, "type": "module",
   "engines": { "node": ">=24.0.0" },
-  "scripts": {"dev":"node server/index.mjs", "build":"vite build", "start":"node server/index.mjs --production", "test":"node --test tests/*.test.mjs", "check":"tsc --noEmit", "verify":"npm run check && npm test && npm run build"},
+  "scripts": {"dev":"node server/index.mjs", "runner":"node server/runner.mjs", "build":"vite build", "start":"node server/index.mjs --production", "test":"node --test tests/*.test.mjs", "check":"tsc --noEmit", "verify":"npm run check && npm test && npm run build", "validate:live":"node tests/autonomy-live.mjs", "validate:experience":"node tests/experience-live.mjs", "check:experience-tools":"node tests/experience-sandbox.mjs"},
   "dependencies": {"express":"^5.1.0", "react":"^19.1.0", "react-dom":"^19.1.0", "lucide-react":"^0.468.0", "zod":"^4.0.0"},
   "devDependencies": {"vite":"^7.0.0", "typescript":"^5.9.0", "@types/react":"^19.1.0", "@types/react-dom":"^19.1.0", "@playwright/test":"^1.55.0"}
 }

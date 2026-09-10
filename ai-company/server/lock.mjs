@@ -1,8 +1,8 @@
 import { openSync,readFileSync,writeFileSync,closeSync,unlinkSync } from 'node:fs';
 import path from 'node:path';
 
-export function acquireServerLock(directory){
-  const file=path.join(directory,'server.lock');
+export function acquireServerLock(directory,name='server.lock'){
+  const file=path.join(directory,name);
   for(let attempt=0;attempt<2;attempt++){
     try{const fd=openSync(file,'wx');writeFileSync(fd,String(process.pid));closeSync(fd);return ()=>{try{if(readFileSync(file,'utf8')===String(process.pid))unlinkSync(file);}catch{}};}
     catch(error){

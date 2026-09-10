@@ -15,21 +15,22 @@ export class Store {
   constructor(dir) {
     this.dir=path.resolve(dir); mkdirSync(this.dir,{recursive:true});
     this.db=new DatabaseSync(path.join(this.dir,'company.sqlite'));
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS entities (kind TEXT NOT NULL, scope TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(kind,scope,id));
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL, run TEXT NOT NULL, time TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS event_scope ON events(scope,run,seq);`);
     if(!this.get('settings','company','main')) this.put('settings','company',{id:'main',name:'Rain Company',rules:'대표의 목표와 인수 조건을 먼저 확인한다. 실제 실행 근거 없이 완료를 주장하지 않는다. 비밀 정보에 접근하거나 외부에 게시하지 않는다. 프로젝트 간 기억과 자료를 섞지 않는다.',stopped:false,maxRuns:100,tokenBudget:1000000});
     if(!this.list('candidate','company').length) this.seedCandidates();
   }
-  get(kind,scope,id){const r=this.db.prepare('SELECT data FROM entities WHERE kind=? AND scope=? AND id=?').get(kind,scope,id);return r?JSON.parse(r.data):undefined;}
+  get(kind,scope,id){if(typeof scope!=='string'||typeof id!=='string')return undefined;const r=this.db.prepare('SELECT data FROM entities WHERE kind=? AND scope=? AND id=?').get(kind,scope,id);return r?JSON.parse(r.data):undefined;}
   require(kind,scope,id){const r=this.get(kind,scope,id);if(!r)throw new Error('요청한 항목이 이 프로젝트에 없습니다.');return r;}
   list(kind,scope){return this.db.prepare('SELECT data FROM entities WHERE kind=? AND scope=? ORDER BY rowid').all(kind,scope).map(r=>JSON.parse(r.data));}
   put(kind,scope,value){this.db.prepare('INSERT INTO entities VALUES(?,?,?,?) ON CONFLICT(kind,scope,id) DO UPDATE SET data=excluded.data').run(kind,scope,value.id,JSON.stringify(value));return value;}
   patch(kind,scope,id,change){return this.put(kind,scope,{...this.require(kind,scope,id),...change,updatedAt:now()});}
+  transaction(work){this.db.exec('BEGIN IMMEDIATE');try{const result=work();this.db.exec('COMMIT');return result;}catch(e){this.db.exec('ROLLBACK');throw e;}}
   event(scope,run,data){this.db.prepare('INSERT INTO events(scope,run,time,data) VALUES(?,?,?,?)').run(scope,run,now(),JSON.stringify(data));}
   events(scope,run,after=0){return this.db.prepare('SELECT * FROM events WHERE scope=? AND run=? AND seq>? ORDER BY seq LIMIT 1000').all(scope,run,after).map(r=>({...r,data:JSON.parse(r.data)}));}
-  message(scope,sender,text,extra={}) {return this.put('message',scope,{id:uid(),sender,text,createdAt:now(),channel:'general',...extra});}
+  message(scope,sender,text,extra={}) {return this.put('message',scope,{id:uid(),projectId:scope,sender,text,createdAt:now(),channel:'general',...extra});}
   seedCandidates(){
     const names=[['서도윤','김서아','윤지후'],['한이서','정유진','박시온'],['강하린','이도하','최서준'],['윤나린','김태오','백지안'],['이준호','박서진','정하율'],['김유나','오지호','서수빈'],['정민서','류도현','한소율'],['최다온','임수아','문지완'],['신현우','배예린','조은호'],['차지윤','권도겸','남서영'],['송하은','홍우진','노다인']];
     const styles=[['차분한 분석가','근거와 체크리스트를 작성한 뒤 작은 단위로 진행','복잡한 문제 구조화 · 꼼꼼한 검증','정보가 부족하면 결정이 느려질 수 있음'],['빠른 실험가','작은 실험을 빠르게 만들고 피드백으로 개선','빠른 초안 · 유연한 협업','장기 설계와 문서 보완이 필요함'],['협업 중심 조율가','이해관계자의 관점을 정리하고 합의를 이끎','명확한 소통 · 의존성 조율','합의 과정이 길어질 수 있음']];

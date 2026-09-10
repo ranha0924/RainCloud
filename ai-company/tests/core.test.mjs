@@ -13,6 +13,20 @@ import { acquireServerLock } from '../server/lock.mjs';
 async function fixture(){const dir=await mkdtemp(path.join(os.tmpdir(),'rain-company-test-'));return {dir,store:new Store(path.join(dir,'data'))};}
 function project(store,changes={}){return store.put('project','company',{id:uid(),name:'Test project',goal:'Scoped goal',repository:'',stack:'',testCommand:'node --test',model:'',maxRuns:30,tokenBudget:300000,networkAccess:false,allowedPaths:['.'],assignments:[],...changes});}
 function hire(store,role='po'){const c=store.list('candidate','company').find(c=>c.role===role);return store.put('employee','company',{...c,id:uid(),candidateId:c.id});}
+test('independent local data stores keep browser sessions across ports without accepting each other alone',async()=>{
+  const fixtures=await Promise.all([fixture(),fixture()]);const servers=[];
+  try{
+    for(const {store} of fixtures){const server=createApp(store,new Runtime(store)).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));servers.push(server);}
+    const bases=servers.map(s=>`http://127.0.0.1:${s.address().port}`);
+    const cookies=await Promise.all(bases.map(async base=>(await fetch(base+'/api/session')).headers.get('set-cookie').split(';')[0]));
+    assert.notEqual(cookies[0].split('=')[0],cookies[1].split('=')[0]);
+    for(let i=0;i<2;i++){
+      assert.equal((await fetch(bases[i]+'/api/bootstrap',{headers:{cookie:cookies.join('; ')}})).status,200);
+      assert.equal((await fetch(bases[i]+'/api/bootstrap',{headers:{cookie:cookies[1-i]}})).status,401);
+      assert.equal((await fetch(bases[i]+'/api/bootstrap',{headers:{cookie:cookies.join('; '),Origin:bases[1-i]}})).status,403);
+    }
+  }finally{await Promise.all(servers.map(s=>new Promise(r=>s.close(r))));fixtures.forEach(f=>f.store.close());}
+});
 const waitForIdle=async runtime=>{for(let n=0;runtime.active.size;n++){if(n>1000)throw new Error('Runtime never became idle');await new Promise(r=>setTimeout(r,10));}};
 
 test('Git stdout remains separate from warnings and one server owns the database',async()=>{const {dir,store}=await fixture();const release=acquireServerLock(store.dir);assert.throws(()=>acquireServerLock(store.dir),/실행 중/);release();const second=acquireServerLock(store.dir);second();const result=await command(process.execPath,['-e','process.stdout.write("file.txt");process.stderr.write("warning: CRLF")'],dir);assert.equal(result.stdout,'file.txt');assert.equal(result.stderr,'warning: CRLF');store.close();});
