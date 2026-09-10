@@ -4,43 +4,53 @@ import { CodexClient } from './codex.mjs';
 import { uid,now,roles } from './store.mjs';
 import { command } from './process.mjs';
 import { prepareWorkspace,developerWorkspace,commitDeveloper,integrate,resultDiff } from './workspaces.mjs';
+import { hash, syncExperiences } from './experience.mjs';
+import { scopeRules } from './personal.mjs';
 
 export const stages=['po','cto','backend','frontend','qa'];
 export const reportSchema={type:'object',additionalProperties:false,properties:{summary:{type:'string'},handoff:{type:'string'},passed:{type:'boolean'}},required:['summary','handoff','passed']};
 const redact=value=>JSON.parse(JSON.stringify(value).replace(/sk-[A-Za-z0-9_-]{16,}/g,'[REDACTED]').replace(/Bearer\s+[A-Za-z0-9._-]{16,}/g,'Bearer [REDACTED]'));
 export class Runtime{
   constructor(store,{clientFactory=cwd=>new CodexClient(cwd)}={}){this.store=store;this.clientFactory=clientFactory;this.active=new Map();}
-  usage(scope){const runs=this.store.list('run',scope);return {runs:runs.length,tokens:runs.reduce((n,r)=>n+(r.usage?.last?.totalTokens||0),0),unknown:runs.filter(r=>r.status!=='running'&&!r.usage).length};}
+  usage(scope){const runs=this.store.list('run',scope);return {runs:runs.length,tokens:runs.reduce((n,r)=>n+(r.accountedTokens??r.usage?.last?.totalTokens??0),0),unknown:runs.filter(r=>r.status!=='running'&&!r.usage).length,cost:null,costBasis:'금액 미제공 · 실제 보고된 토큰과 호출 수로 제한'};}
   budget(scope){
     const settings=this.store.require('settings','company','main');if(settings.stopped)throw new Error('전체 중지 상태입니다. 운영 설정에서 다시 허용하세요.');
     const all=[{id:'company'},...this.store.list('project','company')].map(p=>this.usage(p.id));
-    if(all.reduce((n,u)=>n+u.runs,0)>=settings.maxRuns||all.reduce((n,u)=>n+u.tokens,0)>=settings.tokenBudget)throw new Error('회사 전체 실행 예산을 소진했습니다.');
-    if(scope!=='company'){const p=this.store.require('project','company',scope);const u=this.usage(scope);if(u.runs>=p.maxRuns||u.tokens>=p.tokenBudget)throw new Error('프로젝트 실행 예산을 소진했습니다.');}
+    if(all.reduce((n,u)=>n+u.runs,0)>=settings.maxRuns||all.reduce((n,u)=>n+u.tokens,0)>=(settings.tokenBudget??Infinity))throw new Error('회사 전체 실행 예산을 소진했습니다.');
+    if(scope!=='company'){const p=this.store.require('project','company',scope);const u=this.usage(scope);if(u.runs>=p.maxRuns||u.tokens>=(p.tokenBudget??Infinity))throw new Error('프로젝트 실행 예산을 소진했습니다.');}
   }
   employee(scope,id){const e=this.store.require('employee','company',id);if(scope!=='company'){const p=this.store.require('project','company',scope);if(!p.assignments.some(a=>a.employeeId===id))throw new Error('프로젝트에 배정되지 않은 직원입니다.');}return e;}
-  instructions(scope,person){
+  instructions(scope,person,{includeMemory=true}={}){
     const s=this.store.require('settings','company','main');
     const p=scope==='company'?null:this.store.require('project','company',scope);
-    const memory=this.store.list('memory',scope).map(m=>m.text).join('\n').slice(-16000);
+    const memory=(includeMemory?this.store.list('memory',scope).map(m=>m.text).join('\n').slice(-16000):'이 실행은 고정된 자료만 사용합니다.')+'\n'+scopeRules(this.store,scope,person.id);
     return `당신은 AI 회사의 가상 직원 ${person.name}, 직무 ${roles.find(r=>r.id===person.role)?.name}입니다. 한국어로 명확하게 소통하세요.\n성격: ${person.personality}\n업무 방식: ${person.workStyle}\n강점: ${person.strengths}\n약점: ${person.weaknesses}\n대표가 저장한 직원 지침: ${person.instructions||''}\n회사 규칙:\n${s.rules}\n현재 프로젝트: ${p?JSON.stringify({name:p.name,goal:p.goal,stack:p.stack}):'회사 공통 채용 및 운영'}\n현재 범위의 기억:\n${memory}\n현재 작업 디렉터리 밖의 프로젝트, 홈 폴더, 인증 파일, .env 및 비밀 정보에 접근하지 마세요. 다른 프로젝트의 기억이나 과거 대화를 가져오지 마세요. 외부 메시지 전송, 게시, 배포, push, 추가 에이전트 생성은 금지합니다. 명령/수정은 현재 디렉터리에서만 수행하세요. 프로필은 역할 연기이며 실제 사람인 척하지 마세요.`;
   }
-  async agent({scope,person,prompt,cwd,writable=false,network=false,taskId,stage,conversationId,signal,threadId,onThread,outputSchema}){
+  async agent({scope,person,prompt,cwd,writable=false,network=false,taskId,stage,conversationId,signal,threadId,onThread,onRun,onUsage,outputSchema,timeoutMs=600000,restrictedRead=false,context={}}){
     this.budget(scope);
     const p=scope==='company'?null:this.store.require('project','company',scope);
-    const run=this.store.put('run',scope,{id:uid(),employeeId:person.id,employeeName:person.name,role:person.role,taskId,stage,conversationId,status:'running',createdAt:now(),cwd,threadId});
-    const client=this.clientFactory(cwd);
+    const baseInstructions=context.instructions??this.instructions(scope,person);
+    const instructions=baseInstructions+(process.platform==='win32'?'\nWindows 실행 참고: PowerShell 출력에서 한글이 깨져 보여도 원본 인코딩 오류로 단정하지 마세요. UTF-8 파일은 node의 fs.readFileSync(path, "utf8")와 console.log로 읽으면 됩니다. 제한된 PowerShell에서 .NET 메서드 호출은 실패할 수 있으므로 사용하지 마세요. 사전 조사와 도구 호출을 최소화하고 담당 단계의 작은 결과에 집중하세요.':'');
+    const model=context.model??p?.model;
+    const run=this.store.put('run',scope,{id:uid(),employeeId:person.id,employeeName:person.name,role:person.role,taskId,stage,conversationId,status:'running',createdAt:now(),cwd,threadId,model:model||'Codex 기본 모델',instructionVersion:hash(instructions),instructionSnapshot:instructions,purpose:context.purpose||(taskId?this.store.get('task',scope,taskId)?.purpose:undefined)||'work',evaluationId:context.evaluationId,trialId:context.trialId,experienceTitle:context.title,goal:context.goal,acceptance:context.acceptance});
+    onRun?.(run.id);
+    const prior=threadId?Math.max(0,...this.store.list('run',scope).filter(r=>r.id!==run.id&&r.threadId===threadId).map(r=>r.usage?.total?.totalTokens||0)):0;
+    const recordUsage=usage=>{if(usage){this.store.patch('run',scope,run.id,{usage,accountedTokens:usage.total?Math.max(0,usage.total.totalTokens-prior):usage.last?.totalTokens||0});onUsage?.();}};
+    const client=this.clientFactory(cwd,scope,context.isolation);
     try{
       await client.start();
-      const response=await client.run({cwd,prompt,writable,network,threadId,model:p?.model||undefined,signal,outputSchema,instructions:this.instructions(scope,person),onThread:id=>{this.store.patch('run',scope,run.id,{threadId:id});onThread?.(id);},onEvent:event=>{
+      const response=await client.run({cwd,prompt,writable,network,threadId,model:model||undefined,signal,outputSchema,timeoutMs,restrictedRead,dynamicTools:context.dynamicTools,dynamicHandler:context.dynamicHandler,instructions,onThread:id=>{this.store.patch('run',scope,run.id,{threadId:id});onThread?.(id);},onEvent:event=>{
         if(event.method==='item/agentMessage/delta')return;
         this.store.event(scope,run.id,redact(event));
-        if(event.method==='thread/tokenUsage/updated')this.store.patch('run',scope,run.id,{usage:event.params.tokenUsage});
-        if(event.method==='item/completed'&&event.params.item?.type==='agentMessage')this.store.message(scope,person.name,event.params.item.text,{runId:run.id,employeeId:person.id,taskId,channel:conversationId||'general',origin:'agent'});
+        if(event.method==='turn/started')this.store.patch('run',scope,run.id,{turnId:event.params.turn.id});
+        if(event.method==='thread/tokenUsage/updated')recordUsage(event.params.tokenUsage);
+        if(event.method==='item/completed'&&event.params.item?.type==='agentMessage')this.store.message(scope,person.name,event.params.item.text,{runId:run.id,senderId:person.id,recipientId:taskId?'team':'ceo',employeeId:person.id,taskId,channel:conversationId||'general',origin:'agent'});
       }});
       if(!response.text)throw new Error('에이전트가 최종 결과를 반환하지 않았습니다.');
+      recordUsage(response.usage);
       this.store.patch('run',scope,run.id,{status:'completed',result:response.text,turnId:response.turnId,usage:response.usage,finishedAt:now()});
       return {runId:run.id,...response};
-    }catch(e){this.store.patch('run',scope,run.id,{status:signal?.aborted?'interrupted':'failed',error:e.message,finishedAt:now()});throw e;}finally{client.close();}
+    }catch(e){this.store.patch('run',scope,run.id,{status:signal?.aborted?'interrupted':'failed',error:e.message,finishedAt:now()});throw e;}finally{client.close();syncExperiences(this.store,scope);}
   }
   assertIdle(){if(this.active.size)throw new Error('다른 실행이 진행 중입니다. 현재 실행이 끝난 뒤 시작하세요.');}
   startChat(scope,person,text,{candidate=false,channel='general'}={}){

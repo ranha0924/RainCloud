@@ -6,3 +6,12 @@ dist/
 .env.*
 !.env.example
 test-results/
+
+# Local helpers tied to one saved personal ledger; preserve locally, do not publish.
+scripts/authorize-personal-tokens.mjs
+scripts/finalize-personal-trial.mjs
+scripts/personal-live.mjs
+scripts/personal-ui-fixture.mjs
+scripts/inspect-personal-live.py
+scripts/inspect-personal-ui.py
+scripts/verify-personal-ui.py
